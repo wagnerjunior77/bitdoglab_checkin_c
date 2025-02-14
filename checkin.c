@@ -1,21 +1,28 @@
 /**
- * Código para AP com DHCP/DNS no Pico W – com 
- * gerenciamento do histórico utilizando 10 entradas dinâmicas.
+ * Código para monitoramento de ocupação de um prédio de 5 andares
+ * utilizando o RP2040 (Pico W) com servidor HTTP via lwIP.
+ *
+ * A interface HTML permite:
+ *  - Selecionar um andar (0 a 4) por meio de um dropdown.
+ *  - Clicar em "add", "remove" ou "clear" para modificar a ocupação do andar selecionado.
+ *  - Exibir, logo abaixo, o status (quantas pessoas) do andar selecionado.
+ *
+ * O LED RGB é atualizado: fica verde se o andar selecionado tiver pelo menos 1 pessoa,
+ * ou vermelho se estiver vazio.
  */
 
  #include "pico/cyw43_arch.h"
  #include "pico/stdlib.h"
  #include "lwip/tcp.h"
- 
- #include "dhcpserver.h"   // Certifique-se de que estes arquivos estão no include path
+ #include "lwip/inet.h"   
+ #include "dhcpserver.h"  // Certifique-se de que estes arquivos estão no include path
  #include "dnsserver.h"
- 
  #include <stdio.h>
  #include <string.h>
  #include <stdlib.h>
- #include <time.h>
  #include <ctype.h>
  #include <stdbool.h>
+ #include <time.h>
  
  // ─── CONFIGURAÇÕES DE HARDWARE ──────────────────────────────────────────────
  #define LED_R_PIN 13
@@ -24,41 +31,50 @@
  
  #define HTTP_PORT 80
  
- // ─── CONFIGURAÇÕES DO HISTÓRICO ──────────────────────────────────────────────
- #define MAX_LOG_ENTRIES 20  // Tamanho do buffer circular
+ // ─── CONFIGURAÇÕES DE OCUPAÇÃO ──────────────────────────────────────────────
+ #define NUM_FLOORS 5       // Andares 0 a 4
+ #define MAX_OCCUPANCY 50   // Limite de ocupação por andar
  
- static char log_entries[MAX_LOG_ENTRIES][64];
- static int log_index = 0;         // Próximo índice para escrita (buffer circular)
- static int total_log_count = 0;   // Total de entradas adicionadas (incrementado a cada novo registro)
- 
- // Usuários válidos: JOAO, MARIA, CARLOS, VISITANTE
- static bool user_present[4] = { false, false, false, false };
- static const char* valid_users[4] = { "JOAO", "MARIA", "CARLOS", "VISITANTE" };
+ static int occupancy[NUM_FLOORS] = {0, 0, 0, 0, 0};  // Contagem de pessoas por andar
+ static int selected_floor = 0;  // Andar atualmente selecionado
  
  // ─── FUNÇÕES AUXILIARES ───────────────────────────────────────────────────────
  
- // Extrai o valor de um parâmetro da requisição GET (procura em uma linha)
- bool extract_parameter(const char *line, const char *key, char *value, size_t max_len) {
-     const char *start = strstr(line, key);
-     if (!start) return false;
-     start += strlen(key);
-     if (*start != '=') return false;
-     start++; // pula o '='
-     size_t i = 0;
-     while (*start && *start != '&' && *start != ' ' && i < max_len - 1) {
-         value[i++] = *start++;
+ /**
+  * Extrai os parâmetros "floor" e "action" da query string da requisição.
+  */
+ static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, 
+                                  char *action, size_t action_len) {
+     floor_str[0] = '\0';
+     action[0] = '\0';
+     
+     const char *p = strstr(request_line, "floor=");
+     if (p) {
+         p += strlen("floor=");
+         size_t i = 0;
+         while (*p && *p != '&' && *p != ' ' && i < floor_len - 1) {
+             floor_str[i++] = *p++;
+         }
+         floor_str[i] = '\0';
      }
-     value[i] = '\0';
-     return true;
+     p = strstr(request_line, "action=");
+     if (p) {
+         p += strlen("action=");
+         size_t i = 0;
+         while (*p && *p != '&' && *p != ' ' && i < action_len - 1) {
+             action[i++] = *p++;
+         }
+         action[i] = '\0';
+     }
  }
-  
- // Atualiza o LED RGB: verde se houver algum usuário presente; vermelho caso contrário
+ 
+ /**
+  * Atualiza o LED RGB de acordo com a ocupação do andar selecionado.
+  * - Se occupancy[selected_floor] > 0: LED verde.
+  * - Se occupancy[selected_floor] == 0: LED vermelho.
+  */
  void update_led_status(void) {
-     bool any = false;
-     for (int i = 0; i < 4; i++) {
-         if (user_present[i]) { any = true; break; }
-     }
-     if (any) {
+     if (occupancy[selected_floor] > 0) {
          gpio_put(LED_R_PIN, 0);
          gpio_put(LED_G_PIN, 1);
          gpio_put(LED_B_PIN, 0);
@@ -68,120 +84,75 @@
          gpio_put(LED_B_PIN, 0);
      }
  }
-  
- // Alterna o check-in/check-out do usuário e adiciona um registro no histórico
- void toggle_checkin(const char *user) {
-     char user_upper[16];
-     strncpy(user_upper, user, sizeof(user_upper));
-     user_upper[sizeof(user_upper) - 1] = '\0';
-     for (char *p = user_upper; *p; ++p) {
-         *p = toupper((unsigned char)*p);
+ 
+ /**
+  * Atualiza a ocupação do andar especificado (via parâmetro "floor")
+  * conforme a ação (add, remove ou clear). Também atualiza o andar selecionado.
+  */
+ void update_occupancy(const char *floor_str, const char *action) {
+     int floor = atoi(floor_str);
+     if (floor < 0 || floor >= NUM_FLOORS) return;
+     
+     // Atualiza o andar selecionado para efeito do status e LED
+     selected_floor = floor;
+     
+     if (strcmp(action, "add") == 0) {
+         if (occupancy[floor] < MAX_OCCUPANCY) occupancy[floor]++;
+     } else if (strcmp(action, "remove") == 0) {
+         if (occupancy[floor] > 0) occupancy[floor]--;
+     } else if (strcmp(action, "clear") == 0) {
+         occupancy[floor] = 0;
      }
-     int index = -1;
-     for (int i = 0; i < 4; i++) {
-         if (strcmp(user_upper, valid_users[i]) == 0) {
-             index = i;
-             break;
-         }
-     }
-     if (index == -1) return; // Usuário inválido
-  
-     time_t now = time(NULL);
-     struct tm *tm_info = localtime(&now);
-     char timestamp[9];
-     if (tm_info != NULL) {
-         snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d",
-                  tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
-     } else {
-         snprintf(timestamp, sizeof(timestamp), "00:00:00");
-     }
-  
-     if (user_present[index]) {
-         user_present[index] = false;
-         snprintf(log_entries[log_index], sizeof(log_entries[log_index]),
-                  "%s saiu às %s", valid_users[index], timestamp);
-         printf("%s saiu às %s\n", valid_users[index], timestamp);
-     } else {
-         user_present[index] = true;
-         snprintf(log_entries[log_index], sizeof(log_entries[log_index]),
-                  "%s entrou às %s", valid_users[index], timestamp);
-         printf("%s entrou às %s\n", valid_users[index], timestamp);
-     }
-     log_index = (log_index + 1) % MAX_LOG_ENTRIES;
-     total_log_count++;
+     printf("Andar %d: nova ocupação = %d\n", floor, occupancy[floor]);
      update_led_status();
  }
-  
- // Limpa o histórico e reseta o estado de presença
- void clear_log(void) {
-     for (int i = 0; i < 4; i++) {
-         user_present[i] = false;
-     }
-     for (int i = 0; i < MAX_LOG_ENTRIES; i++) {
-         log_entries[i][0] = '\0';
-     }
-     log_index = 0;
-     total_log_count = 0;
-     printf("Histórico de presença limpo!\n");
-     update_led_status();
- }
-  
- // Cria a página HTML de resposta, exibindo os últimos 10 registros em ordem cronológica
+ 
+ /**
+  * Gera a página HTML. A página apresenta:
+  *  - Um formulário com um dropdown para selecionar o andar.
+  *  - Botões para as ações: add, remove e clear.
+  *  - Um parágrafo que exibe a ocupação atual do andar selecionado.
+  */
  void create_html_page(char *buffer, size_t buffer_size) {
-     int present_count = 0;
-     for (int i = 0; i < 4; i++) {
-         if (user_present[i]) present_count++;
+     char body[2048] = "";
+     strcat(body, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Monitor de Ocupação</title>");
+     strcat(body, "<meta http-equiv=\"Cache-Control\" content=\"no-store\"/>");
+     strcat(body, "</head><body>");
+     strcat(body, "<h1>Monitor de Ocupação do Prédio</h1>");
+     
+     // Formulário
+     strcat(body, "<form action=\"/\" method=\"GET\">");
+     strcat(body, "<label for=\"floor\">Selecione o Andar:</label>");
+     strcat(body, "<select name=\"floor\" id=\"floor\">");
+     for (int i = 0; i < NUM_FLOORS; i++) {
+         char option[64];
+         if (i == selected_floor) {
+             snprintf(option, sizeof(option), "<option value=\"%d\" selected>Andar %d</option>", i, i);
+         } else {
+             snprintf(option, sizeof(option), "<option value=\"%d\">Andar %d</option>", i, i);
+         }
+         strcat(body, option);
      }
+     strcat(body, "</select><br/><br/>");
+     strcat(body, "<input type=\"submit\" name=\"action\" value=\"add\"> ");
+     strcat(body, "<input type=\"submit\" name=\"action\" value=\"remove\"> ");
+     strcat(body, "<input type=\"submit\" name=\"action\" value=\"clear\"> ");
+     strcat(body, "</form>");
      
-     char log_html[1024] = "";  // Aumentamos o buffer para log HTML
-     int entries_to_show = 10;  // Agora, exibiremos 10 registros
+     // Status do andar selecionado
+     char status_line[128];
+     snprintf(status_line, sizeof(status_line), "<p>Andar %d: %d pessoas</p>", selected_floor, occupancy[selected_floor]);
+     strcat(body, status_line);
      
-     // Determine quantos registros válidos temos
-     int num_entries = (total_log_count < MAX_LOG_ENTRIES) ? total_log_count : MAX_LOG_ENTRIES;
-     
-     int start_index = 0;
-     if (num_entries > entries_to_show) {
-          // Se o buffer estiver cheio, o registro mais antigo é log_entries[log_index]
-          // Então os últimos entries_to_show registros começam em:
-          start_index = (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES;
-     }
-     
-     for (int i = 0; i < (num_entries < entries_to_show ? num_entries : entries_to_show); i++) {
-          int idx = (start_index + i) % MAX_LOG_ENTRIES;
-          if (log_entries[idx][0] != '\0') {
-              strcat(log_html, "<li>");
-              strcat(log_html, log_entries[idx]);
-              strcat(log_html, "</li>");
-          }
-     }
+     strcat(body, "</body></html>");
      
      snprintf(buffer, buffer_size,
               "HTTP/1.1 200 OK\r\n"
               "Content-Type: text/html; charset=UTF-8\r\n"
-              "Connection: close\r\n\r\n"
-              "<!DOCTYPE html>"
-              "<html>"
-              "<head><meta charset=\"UTF-8\"><title>BitDogLab - Check-in</title></head>"
-              "<body>"
-              "<h2>Registro de Presença</h2>"
-              "<p>Total de pessoas presentes: %d</p>"
-              "<form action=\"/\" method=\"GET\">"
-              "  <button name=\"user\" value=\"Joao\">João</button>"
-              "  <button name=\"user\" value=\"Maria\">Maria</button>"
-              "  <button name=\"user\" value=\"Carlos\">Carlos</button>"
-              "  <button name=\"user\" value=\"Visitante\">Visitante</button>"
-              "</form>"
-              "<form action=\"/\" method=\"GET\">"
-              "  <button name=\"clear\" value=\"true\">Limpar Histórico</button>"
-              "</form>"
-              "<h3>Histórico de Check-in</h3>"
-              "<ul>%s</ul>"
-              "</body>"
-              "</html>\r\n",
-              present_count, log_html);
+              "Connection: close\r\n\r\n%s", body);
  }
   
- // ─── Callback para envio completo – fecha a conexão de forma adequada ───────
+ // ─── Callback para envio completo – fecha a conexão ───────
  static err_t sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len) {
      printf("Resposta enviada, fechando conexão.\n");
      tcp_arg(tpcb, NULL);
@@ -196,7 +167,6 @@
  }
   
  // ─── IMPLEMENTAÇÃO DO SERVIDOR HTTP ─────────────────────────────────────────────
-  
  static err_t http_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
      if (p == NULL) {
           tcp_close(tpcb);
@@ -204,48 +174,41 @@
      }
      
      char request[1024] = {0};
-     size_t copy_len = p->tot_len < sizeof(request) - 1 ? p->tot_len : sizeof(request) - 1;
+     size_t copy_len = (p->tot_len < sizeof(request) - 1) ? p->tot_len : sizeof(request) - 1;
      memcpy(request, p->payload, copy_len);
      request[copy_len] = '\0';
      
-     // Libera os bytes lidos para liberar o "window"
+     // Libera os bytes recebidos para liberar o "window"
      tcp_recved(tpcb, p->tot_len);
      
      // Obtenha a primeira linha da requisição
      char line[256] = {0};
      char *token = strtok(request, "\r\n");
      if (token) {
-         strncpy(line, token, sizeof(line)-1);
+         strncpy(line, token, sizeof(line) - 1);
      } else {
          pbuf_free(p);
          return ERR_OK;
      }
      
-     // Filtra: processa apenas requisições que comecem com "GET"
+     // Processa apenas requisições que começam com "GET"
      if (strncmp(line, "GET", 3) != 0) {
          pbuf_free(p);
          return ERR_OK;
      }
      
-     // Verifica se a requisição é para a página principal ("GET / HTTP/1.1")
-     // ou contém os parâmetros "user=" ou "clear="
-     if ((strstr(line, "user=") == NULL && strstr(line, "clear=") == NULL) &&
-         (strcmp(line, "GET / HTTP/1.1") != 0 && strcmp(line, "GET /") != 0)) {
-         const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-         tcp_write(tpcb, not_found, strlen(not_found), TCP_WRITE_FLAG_COPY);
-         tcp_sent(tpcb, sent_callback);
-         pbuf_free(p);
-         return ERR_OK;
-     }
+     // Extrai os parâmetros "floor" e "action", se presentes
+     char floor_str[8] = "";
+     char action[16] = "";
+     parse_query_params(line, floor_str, sizeof(floor_str), action, sizeof(action));
      
-     // Processa a requisição: se contém "clear=true", limpa o log; se contém "user=", extrai o parâmetro
-     if (strstr(line, "clear=true") != NULL) {
-          clear_log();
-     } else {
-          char user_param[16] = {0};
-          if (extract_parameter(line, "user", user_param, sizeof(user_param))) {
-              toggle_checkin(user_param);
-          }
+     // Se floor for especificado, atualiza o andar selecionado
+     if (floor_str[0] != '\0') {
+         selected_floor = atoi(floor_str);
+     }
+     // Se action for fornecida, atualiza a ocupação do andar
+     if (action[0] != '\0') {
+         update_occupancy(floor_str, action);
      }
      
      char response[2048] = {0};
@@ -294,7 +257,9 @@
          return 1;
      }
      
-     // Configura o modo Access Point (AP) com SSID e senha
+     // --- (Sem sincronização de horário neste exemplo) ---
+     
+     // Ativa o modo Access Point
      const char *ap_ssid = "BitDog";
      const char *ap_pass = "12345678";  // senha com pelo menos 8 caracteres
      cyw43_arch_enable_ap_mode(ap_ssid, ap_pass, CYW43_AUTH_WPA2_AES_PSK);
@@ -309,7 +274,7 @@
      dhcp_server_t dhcp_server;
      dhcp_server_init(&dhcp_server, &gw, &mask);
      
-     // Inicializa o servidor DNS (opcional, para redirecionar domínios)
+     // Inicializa o servidor DNS (opcional)
      dns_server_t dns_server;
      dns_server_init(&dns_server, &gw);
      
@@ -327,7 +292,7 @@
      // Inicia o servidor HTTP
      start_http_server();
      
-     // Loop principal: mantenha o Wi-Fi ativo e processe o DHCP/DNS
+     // Loop principal: mantém o Wi-Fi ativo e processa DHCP/DNS
      while (true) {
  #if PICO_CYW43_ARCH_POLL
          cyw43_arch_poll();
