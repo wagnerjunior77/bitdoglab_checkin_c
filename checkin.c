@@ -1,13 +1,13 @@
 /**
- * Código modificado para AP com DHCP/DNS no Pico W – com filtragem aprimorada
- * para reduzir a sobrecarga causada por requisições indesejadas.
+ * Código AP com DHCP/DNS no Pico W – com
+ * gerenciamento do histórico usando um buffer circular com total_log_count.
  */
 
  #include "pico/cyw43_arch.h"
  #include "pico/stdlib.h"
  #include "lwip/tcp.h"
  
- #include "dhcpserver.h"   // Certifique-se de que estes arquivos estão no include path
+ #include "dhcpserver.h"   // Estes arquivos devem estar no include path
  #include "dnsserver.h"
  
  #include <stdio.h>
@@ -28,7 +28,8 @@
  #define MAX_LOG_ENTRIES 20
  
  static char log_entries[MAX_LOG_ENTRIES][64];
- static int log_index = 0;
+ static int log_index = 0;         // índice para próxima escrita (buffer circular)
+ static int total_log_count = 0;   // total de entradas adicionadas (zerado em clear_log)
  
  // Usuários válidos: JOAO, MARIA, CARLOS, VISITANTE
  static bool user_present[4] = { false, false, false, false };
@@ -50,7 +51,7 @@
      value[i] = '\0';
      return true;
  }
- 
+  
  // Atualiza o LED RGB: verde se houver algum usuário presente; vermelho caso contrário
  void update_led_status(void) {
      bool any = false;
@@ -58,18 +59,16 @@
          if (user_present[i]) { any = true; break; }
      }
      if (any) {
-         // Verde: R=0, G=1, B=0
          gpio_put(LED_R_PIN, 0);
          gpio_put(LED_G_PIN, 1);
          gpio_put(LED_B_PIN, 0);
      } else {
-         // Vermelho: R=1, G=0, B=0
          gpio_put(LED_R_PIN, 1);
          gpio_put(LED_G_PIN, 0);
          gpio_put(LED_B_PIN, 0);
      }
  }
- 
+  
  // Alterna o check-in/check-out do usuário
  void toggle_checkin(const char *user) {
      char user_upper[16];
@@ -86,7 +85,7 @@
          }
      }
      if (index == -1) return; // Usuário inválido
- 
+  
      time_t now = time(NULL);
      struct tm *tm_info = localtime(&now);
      char timestamp[9];
@@ -96,7 +95,7 @@
      } else {
          snprintf(timestamp, sizeof(timestamp), "00:00:00");
      }
- 
+  
      if (user_present[index]) {
          user_present[index] = false;
          snprintf(log_entries[log_index], sizeof(log_entries[log_index]),
@@ -109,9 +108,10 @@
          printf("%s entrou às %s\n", valid_users[index], timestamp);
      }
      log_index = (log_index + 1) % MAX_LOG_ENTRIES;
+     total_log_count++;  // Incrementa o contador total
      update_led_status();
  }
- 
+  
  // Limpa o histórico e reseta o estado de presença
  void clear_log(void) {
      for (int i = 0; i < 4; i++) {
@@ -121,37 +121,48 @@
          log_entries[i][0] = '\0';
      }
      log_index = 0;
+     total_log_count = 0;
      printf("Histórico de presença limpo!\n");
      update_led_status();
  }
- 
- // Cria a página HTML de resposta
+  
+ // Cria a página HTML de resposta, exibindo os últimos 5 registros em ordem cronológica
  void create_html_page(char *buffer, size_t buffer_size) {
      int present_count = 0;
      for (int i = 0; i < 4; i++) {
          if (user_present[i]) present_count++;
      }
+     
      char log_html[512] = "";
-     char *entries[5];
-     int count = 0;
-     for (int i = 0; i < MAX_LOG_ENTRIES; i++) {
-         if (log_entries[i][0] != '\0') {
-             entries[count++] = log_entries[i];
-             if (count > 5) {
-                 for (int j = 0; j < count - 1; j++) {
-                     entries[j] = entries[j + 1];
-                 }
-                 count = 5;
-             }
+     // quantos registros válidos:
+     int num_entries = total_log_count < MAX_LOG_ENTRIES ? total_log_count : MAX_LOG_ENTRIES;
+     int entries_to_show = (num_entries < 5) ? num_entries : 5;
+     // Se temos mais de 5 registros, o registro mais antigo está em log_index (por circularidade)
+     // Calcul o índice do primeiro registro a mostrar:
+     int start_index;
+     if (total_log_count < MAX_LOG_ENTRIES) {
+         start_index = 0;
+     } else {
+         // Se total_log_count >= MAX_LOG_ENTRIES, o buffer está cheio
+         // O registro mais antigo é log_entries[log_index]
+         // Então queremos os registros: log_entries[ (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES ] até log_entries[log_index - 1] (circularmente)
+         start_index = (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES;
+     }
+     
+     // Concatena os registros na string log_html
+     for (int i = 0; i < entries_to_show; i++) {
+         int idx = (start_index + i) % MAX_LOG_ENTRIES;
+         if (log_entries[idx][0] != '\0') {
+             strcat(log_html, "<li>");
+             strcat(log_html, log_entries[idx]);
+             strcat(log_html, "</li>");
          }
      }
-     for (int i = 0; i < count; i++) {
-         strcat(log_html, "<li>");
-         strcat(log_html, entries[i]);
-         strcat(log_html, "</li>");
-     }
+     
      snprintf(buffer, buffer_size,
-              "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html; charset=UTF-8\r\n"
+              "Connection: close\r\n\r\n"
               "<!DOCTYPE html>"
               "<html>"
               "<head><meta charset=\"UTF-8\"><title>BitDogLab - Check-in</title></head>"
@@ -174,8 +185,22 @@
               present_count, log_html);
  }
   
+ // ─── Callback para envio completo – fecha a conexão de forma adequada ───────
+ static err_t sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len) {
+     printf("Resposta enviada, fechando conexão.\n");
+     tcp_arg(tpcb, NULL);
+     tcp_recv(tpcb, NULL);
+     tcp_sent(tpcb, NULL);
+     err_t err = tcp_close(tpcb);
+     if (err != ERR_OK) {
+         printf("Erro ao fechar conexão (err=%d), abortando.\n", err);
+         tcp_abort(tpcb);
+     }
+     return ERR_OK;
+ }
+  
  // ─── IMPLEMENTAÇÃO DO SERVIDOR HTTP ─────────────────────────────────────────────
- 
+  
  static err_t http_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
      if (p == NULL) {
           tcp_close(tpcb);
@@ -186,6 +211,9 @@
      size_t copy_len = p->tot_len < sizeof(request) - 1 ? p->tot_len : sizeof(request) - 1;
      memcpy(request, p->payload, copy_len);
      request[copy_len] = '\0';
+     
+     // Informe à pilha que recebemos esses dados (libera o window)
+     tcp_recved(tpcb, p->tot_len);
      
      // Obtenha a primeira linha da requisição
      char line[256] = {0};
@@ -203,22 +231,21 @@
          return ERR_OK;
      }
      
-     // Verifique se a requisição é exatamente para a página principal ("GET / HTTP/1.1")
+     // Verifica se a requisição é para a página principal ("GET / HTTP/1.1")
      // ou se contém os parâmetros "user=" ou "clear="
-     if ( (strstr(line, "user=") == NULL && strstr(line, "clear=") == NULL) &&
-          (strcmp(line, "GET / HTTP/1.1") != 0 && strcmp(line, "GET /") != 0) ) {
-         // Para outras requisições, envia resposta 404 Not Found e fecha a conexão.
-         const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+     if ((strstr(line, "user=") == NULL && strstr(line, "clear=") == NULL) &&
+         (strcmp(line, "GET / HTTP/1.1") != 0 && strcmp(line, "GET /") != 0)) {
+         const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
          tcp_write(tpcb, not_found, strlen(not_found), TCP_WRITE_FLAG_COPY);
+         tcp_sent(tpcb, sent_callback);
          pbuf_free(p);
          return ERR_OK;
      }
      
-     // Se a requisição contém "clear=true", limpe o log
+     // Processa a requisição: se contém "clear=true", limpa o log; se contém "user=", extrai o parâmetro
      if (strstr(line, "clear=true") != NULL) {
           clear_log();
      } else {
-          // Se contém "user=", extraia o parâmetro
           char user_param[16] = {0};
           if (extract_parameter(line, "user", user_param, sizeof(user_param))) {
               toggle_checkin(user_param);
@@ -227,7 +254,14 @@
      
      char response[2048] = {0};
      create_html_page(response, sizeof(response));
-     tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
+     err_t write_err = tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
+     if (write_err == ERR_OK) {
+         tcp_sent(tpcb, sent_callback);
+         tcp_output(tpcb);
+     } else {
+         printf("Erro ao escrever a resposta (err=%d), fechando conexão.\n", write_err);
+         tcp_close(tpcb);
+     }
      pbuf_free(p);
      return ERR_OK;
  }
@@ -307,9 +341,6 @@
  #endif
      }
      
-     // Nunca alcançado neste exemplo:
-     // dhcp_server_deinit(&dhcp_server);
-     // dns_server_deinit(&dns_server);
      cyw43_arch_deinit();
      return 0;
  }
