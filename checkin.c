@@ -1,13 +1,13 @@
 /**
- * Código AP com DHCP/DNS no Pico W – com
- * gerenciamento do histórico usando um buffer circular com total_log_count.
+ * Código para AP com DHCP/DNS no Pico W – com 
+ * gerenciamento do histórico utilizando 10 entradas dinâmicas.
  */
 
  #include "pico/cyw43_arch.h"
  #include "pico/stdlib.h"
  #include "lwip/tcp.h"
  
- #include "dhcpserver.h"   // Estes arquivos devem estar no include path
+ #include "dhcpserver.h"   // Certifique-se de que estes arquivos estão no include path
  #include "dnsserver.h"
  
  #include <stdio.h>
@@ -25,11 +25,11 @@
  #define HTTP_PORT 80
  
  // ─── CONFIGURAÇÕES DO HISTÓRICO ──────────────────────────────────────────────
- #define MAX_LOG_ENTRIES 20
+ #define MAX_LOG_ENTRIES 20  // Tamanho do buffer circular
  
  static char log_entries[MAX_LOG_ENTRIES][64];
- static int log_index = 0;         // índice para próxima escrita (buffer circular)
- static int total_log_count = 0;   // total de entradas adicionadas (zerado em clear_log)
+ static int log_index = 0;         // Próximo índice para escrita (buffer circular)
+ static int total_log_count = 0;   // Total de entradas adicionadas (incrementado a cada novo registro)
  
  // Usuários válidos: JOAO, MARIA, CARLOS, VISITANTE
  static bool user_present[4] = { false, false, false, false };
@@ -69,7 +69,7 @@
      }
  }
   
- // Alterna o check-in/check-out do usuário
+ // Alterna o check-in/check-out do usuário e adiciona um registro no histórico
  void toggle_checkin(const char *user) {
      char user_upper[16];
      strncpy(user_upper, user, sizeof(user_upper));
@@ -108,7 +108,7 @@
          printf("%s entrou às %s\n", valid_users[index], timestamp);
      }
      log_index = (log_index + 1) % MAX_LOG_ENTRIES;
-     total_log_count++;  // Incrementa o contador total
+     total_log_count++;
      update_led_status();
  }
   
@@ -126,37 +126,33 @@
      update_led_status();
  }
   
- // Cria a página HTML de resposta, exibindo os últimos 5 registros em ordem cronológica
+ // Cria a página HTML de resposta, exibindo os últimos 10 registros em ordem cronológica
  void create_html_page(char *buffer, size_t buffer_size) {
      int present_count = 0;
      for (int i = 0; i < 4; i++) {
          if (user_present[i]) present_count++;
      }
      
-     char log_html[512] = "";
-     // quantos registros válidos:
-     int num_entries = total_log_count < MAX_LOG_ENTRIES ? total_log_count : MAX_LOG_ENTRIES;
-     int entries_to_show = (num_entries < 5) ? num_entries : 5;
-     // Se temos mais de 5 registros, o registro mais antigo está em log_index (por circularidade)
-     // Calcul o índice do primeiro registro a mostrar:
-     int start_index;
-     if (total_log_count < MAX_LOG_ENTRIES) {
-         start_index = 0;
-     } else {
-         // Se total_log_count >= MAX_LOG_ENTRIES, o buffer está cheio
-         // O registro mais antigo é log_entries[log_index]
-         // Então queremos os registros: log_entries[ (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES ] até log_entries[log_index - 1] (circularmente)
-         start_index = (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES;
+     char log_html[1024] = "";  // Aumentamos o buffer para log HTML
+     int entries_to_show = 10;  // Agora, exibiremos 10 registros
+     
+     // Determine quantos registros válidos temos
+     int num_entries = (total_log_count < MAX_LOG_ENTRIES) ? total_log_count : MAX_LOG_ENTRIES;
+     
+     int start_index = 0;
+     if (num_entries > entries_to_show) {
+          // Se o buffer estiver cheio, o registro mais antigo é log_entries[log_index]
+          // Então os últimos entries_to_show registros começam em:
+          start_index = (log_index + MAX_LOG_ENTRIES - entries_to_show) % MAX_LOG_ENTRIES;
      }
      
-     // Concatena os registros na string log_html
-     for (int i = 0; i < entries_to_show; i++) {
-         int idx = (start_index + i) % MAX_LOG_ENTRIES;
-         if (log_entries[idx][0] != '\0') {
-             strcat(log_html, "<li>");
-             strcat(log_html, log_entries[idx]);
-             strcat(log_html, "</li>");
-         }
+     for (int i = 0; i < (num_entries < entries_to_show ? num_entries : entries_to_show); i++) {
+          int idx = (start_index + i) % MAX_LOG_ENTRIES;
+          if (log_entries[idx][0] != '\0') {
+              strcat(log_html, "<li>");
+              strcat(log_html, log_entries[idx]);
+              strcat(log_html, "</li>");
+          }
      }
      
      snprintf(buffer, buffer_size,
@@ -212,7 +208,7 @@
      memcpy(request, p->payload, copy_len);
      request[copy_len] = '\0';
      
-     // Informe à pilha que recebemos esses dados (libera o window)
+     // Libera os bytes lidos para liberar o "window"
      tcp_recved(tpcb, p->tot_len);
      
      // Obtenha a primeira linha da requisição
@@ -232,7 +228,7 @@
      }
      
      // Verifica se a requisição é para a página principal ("GET / HTTP/1.1")
-     // ou se contém os parâmetros "user=" ou "clear="
+     // ou contém os parâmetros "user=" ou "clear="
      if ((strstr(line, "user=") == NULL && strstr(line, "clear=") == NULL) &&
          (strcmp(line, "GET / HTTP/1.1") != 0 && strcmp(line, "GET /") != 0)) {
          const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
