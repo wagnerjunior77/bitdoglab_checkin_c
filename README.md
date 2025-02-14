@@ -1,1 +1,1 @@
-Um projeto criado na bitdoglab com Raspeberry Pi Pico W em C para registrar check ins e check outs em qualquer ambiente com fluxo de pessoas, por exemplo locais domésticos ou corporativos
+Este projeto inovador, desenvolvido na Bitdoglab, consiste em um sistema de registro de entrada manual para um prédio de 5 andares, utilizando a placa Raspberry Pi Pico W e a linguagem de programação C. O sistema inclui feedback visual através de uma matriz de LEDs e um display OLED, exibindo o status de ocupação de cada andar.
