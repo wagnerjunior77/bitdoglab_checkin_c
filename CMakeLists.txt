@@ -1,14 +1,3 @@
-# Generated Cmake Pico project file
-
-cmake_minimum_required(VERSION 3.13)
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Initialise pico_sdk from installed location
-# (note this can come from environment, CMake cache etc)
-
 # == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
 if(WIN32)
     set(USERHOME $ENV{USERPROFILE})
@@ -23,47 +12,53 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico_w CACHE STRING "Board type")
+# == DO NOT EDIT ... etc. ==
 
-# Pull in Raspberry Pi Pico SDK (must be before project)
+cmake_minimum_required(VERSION 3.13)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# PICO_BOARD e includes do pico_sdk
+set(PICO_BOARD pico_w CACHE STRING "Board type")
 include(pico_sdk_import.cmake)
 
 project(checkin C CXX ASM)
 
-# Define o arquivo lwIP de configuração (use caminho relativo)
+# (1) Definir lwipopts.h aqui
 set(PICO_LWIP_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/lwipopts.h")
 
-# Inicializa o SDK do Pico (chamada única)
+# (2) Inicializar o SDK
 pico_sdk_init()
 
-# Adiciona o executável
+# (3) Adicionar executável
 add_executable(checkin 
-
     checkin.c
+    src/ssd1306_i2c.c
     dhcpserver/dhcpserver.c
     dnsserver/dnsserver.c
+    # ... se tiver mais fontes ...
 )
 
 pico_set_program_name(checkin "checkin")
 pico_set_program_version(checkin "0.1")
 
-# Configura a saída (USB ou UART)
 pico_enable_stdio_uart(checkin 0)
 pico_enable_stdio_usb(checkin 1)
 
-# Linka bibliotecas necessárias
-target_link_libraries(checkin
+# (4) Linkar bibliotecas necessárias
+target_link_libraries(checkin 
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
+    hardware_i2c
 )
 
-# Adiciona o diretório atual ao path de includes
+# (5) Incluir diretórios
 target_include_directories(checkin PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts
-    ${CMAKE_CURRENT_LIST_DIR}/dhcpserver
-    ${CMAKE_CURRENT_LIST_DIR}/dnsserver
+    ${CMAKE_CURRENT_LIST_DIR}    # para encontrar lwipopts.h na raiz
+    ${CMAKE_CURRENT_LIST_DIR}/inc
+    # se precisar: ${CMAKE_CURRENT_LIST_DIR}/dhcpserver ...
 )
 
 pico_add_extra_outputs(checkin)
-
