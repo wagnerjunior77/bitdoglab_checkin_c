@@ -13,16 +13,14 @@
  #include "pico/stdlib.h"
  #include "hardware/i2c.h"
  #include "pico/binary_info.h"
- 
- // Wi‑Fi e lwIP
  #include "pico/cyw43_arch.h"
  #include "lwip/tcp.h"
  #include "lwip/inet.h"
  #include "dhcpserver/dhcpserver.h"
  #include "dnsserver/dnsserver.h"
  
- // Drivers do display OLED – baseados na API ssd1306_t
- #include "ssd1306.h"       // Contém definições, comandos e protótipos para o SSD1306
+ // Drivers do display OLED – usando a API baseada em ssd1306_t
+ #include "ssd1306.h"       // Declarações, comandos e protótipos para o SSD1306
  #include "ssd1306_i2c.h"   // Implementação via I2C
  #include "ssd1306_font.h"  // Fonte utilizada pelo display
  
@@ -33,7 +31,7 @@
  #include <stdbool.h>
  #include <time.h>
  
- // ─── DEFINIÇÕES DE HARDWARE ──────────────────────────────────────────────
+ // ─── DEFINIÇÕES DE HARDWARE ─────────────────────────────────────────────
  #define LED_R_PIN 13
  #define LED_G_PIN 11
  #define LED_B_PIN 12
@@ -41,23 +39,25 @@
  #define BUTTON_A 5   // Botão A: decrementa andar
  #define BUTTON_B 6   // Botão B: incrementa andar
  
- // Configurações do display OLED (128×64)
+ // Configurações do display OLED (128x64)
  #define SSD1306_WIDTH    128
  #define SSD1306_HEIGHT   64
  #ifndef SSD1306_I2C_ADDR
-   #define SSD1306_I2C_ADDR _u(0x3C)
+   
+   #define SSD1306_I2C_ADDR 0x3C
  #endif
  #ifndef SSD1306_I2C_CLK
-   #define SSD1306_I2C_CLK 400
+   #define SSD1306_I2C_CLK 400000
  #endif
  
- // I2C utilizado (para Pico W, usamos i2c_default)
- #define I2C_PORT i2c_default
+ // I2C utilizado – para o Pico W com BitDogLab, usamos i2c1 com pinos 14 e 15:
+ #define I2C_PORT i2c1
+ #define I2C_SDA  14
+ #define I2C_SCL  15
  
  // Porta do servidor HTTP
  #define HTTP_PORT 80
  
- // Se não definido, define a autenticação WPA2 (valor 4 conforme exemplo)
  #ifndef CYW43_AUTH_WPA2_AES_PSK
    #define CYW43_AUTH_WPA2_AES_PSK 4
  #endif
@@ -66,38 +66,38 @@
  #define NUM_FLOORS     5
  #define MAX_OCCUPANCY  50
  
- // ─── VARIÁVEIS GLOBAIS ─────────────────────────────────────────────────────
- static int occupancy[NUM_FLOORS] = {0, 0, 0, 0, 0};  // Ocupação por andar
- static int selected_floor = 0;  // Andar atualmente selecionado
+ // ─── VARIÁVEIS GLOBAIS ─────────────────────────────────────────────
+ static int occupancy[NUM_FLOORS] = {0, 0, 0, 0, 0};
+ static int selected_floor = 0;
  
- // Instância global do display OLED
- static ssd1306_t oled_instance;
+ // Objeto global para o display OLED
+ ssd1306_t disp;
  
- // ─── FUNÇÕES AUXILIARES ─────────────────────────────────────────────────────
+ // ─── FUNÇÕES AUXILIARES ─────────────────────────────────────────────
  
- // Extrai os parâmetros "floor" e "action" da query string da requisição HTTP
- static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len,
-                                  char *action, size_t action_len) {
-     floor_str[0] = '\0';
-     action[0] = '\0';
-     const char *p = strstr(request_line, "floor=");
-     if (p) {
-         p += strlen("floor=");
-         size_t i = 0;
-         while (*p && *p != '&' && *p != ' ' && i < floor_len - 1) {
-             floor_str[i++] = *p++;
-         }
-         floor_str[i] = '\0';
+ // Função para configurar o display OLED e os pinos I2C
+ void setup_display() {
+     i2c_init(i2c1, SSD1306_I2C_CLK);
+     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+     gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+     gpio_pull_up(I2C_SDA);
+     gpio_pull_up(I2C_SCL);
+ 
+     disp.external_vcc = false;
+     if (!ssd1306_init(&disp, SSD1306_WIDTH, SSD1306_HEIGHT, SSD1306_I2C_ADDR, i2c1)) {
+         printf("Erro ao inicializar o OLED\n");
      }
-     p = strstr(request_line, "action=");
-     if (p) {
-         p += strlen("action=");
-         size_t i = 0;
-         while (*p && *p != '&' && *p != ' ' && i < action_len - 1) {
-             action[i++] = *p++;
-         }
-         action[i] = '\0';
+     ssd1306_clear(&disp);
+ }
+ 
+ // Função para mostrar uma mensagem no display
+ void mostrar_mensagem(char *str, uint32_t x, uint32_t y, bool should_clear) {
+     if (should_clear) {
+         ssd1306_clear(&disp);
      }
+     sleep_ms(50);
+     ssd1306_draw_string(&disp, x, y, 1, str);
+     ssd1306_show(&disp);
  }
  
  // Atualiza os LEDs RGB conforme a ocupação do andar selecionado
@@ -116,16 +116,16 @@
  // Atualiza o display OLED com o status do andar selecionado
  void update_oled_display(void) {
      char buf[64];
-     ssd1306_clear(&oled_instance);
+     ssd1306_clear(&disp);
      if (selected_floor == 0)
          snprintf(buf, sizeof(buf), "Terreo: %d pessoas", occupancy[selected_floor]);
      else
          snprintf(buf, sizeof(buf), "Andar %d: %d pessoas", selected_floor, occupancy[selected_floor]);
-     ssd1306_draw_string(&oled_instance, 0, 0, 1, buf);
-     ssd1306_show(&oled_instance);
+     ssd1306_draw_string(&disp, 0, 0, 1, buf);
+     ssd1306_show(&disp);
  }
  
- // Lê o estado de um botão (botões com pull‑up: retorna 1 se pressionado)
+ // Lê o estado de um botão (os botões usam pull‑up; retorna 1 se pressionado)
  int read_button(uint pin) {
      return (gpio_get(pin) == 0);
  }
@@ -165,7 +165,7 @@
      update_oled_display();
  }
  
- // Gera a página HTML que exibe um formulário para modificar a ocupação e uma tabela com o status de todos os andares
+ // Gera a página HTML com formulário e tabela de status de todos os andares
  void create_html_page(char *buffer, size_t buffer_size) {
      char body[2048] = "";
      strcat(body, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Monitor de Ocupacao</title>");
@@ -180,7 +180,7 @@
      strcat(body, "<select name=\"floor\" id=\"floor\">");
      for (int i = 0; i < NUM_FLOORS; i++) {
          char option[64];
-         if (i == 0)
+         if(i == 0)
              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Terreo</option>", i, (i==selected_floor)?"selected":"");
          else
              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Andar %d</option>", i, (i==selected_floor)?"selected":"", i);
@@ -212,9 +212,9 @@
               "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\nConnection: close\r\n\r\n%s",
               body);
  }
-  
- /* ─── FUNÇÕES DO SERVIDOR HTTP ───────────────────────────────────────────── */
-  
+ 
+ /* ─── FUNÇÕES DO SERVIDOR HTTP ───────────────────────────────────────── */
+ 
  // Callback chamada após o envio completo da resposta HTTP (fecha a conexão)
  static err_t sent_callback(void *arg, struct tcp_pcb *tpcb, u16_t len) {
      printf("Resposta enviada, fechando conexao.\n");
@@ -228,7 +228,33 @@
      }
      return ERR_OK;
  }
-  
+
+
+  // Extrai os parâmetros "floor" e "action" da query string da requisição HTTP
+static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len,
+                                 char *action, size_t action_len) {
+    floor_str[0] = '\0';
+    action[0] = '\0';
+    const char *p = strstr(request_line, "floor=");
+    if (p) {
+        p += strlen("floor=");
+        size_t i = 0;
+        while (*p && *p != '&' && *p != ' ' && i < floor_len - 1) {
+            floor_str[i++] = *p++;
+        }
+        floor_str[i] = '\0';
+    }
+    p = strstr(request_line, "action=");
+    if (p) {
+        p += strlen("action=");
+        size_t i = 0;
+        while (*p && *p != '&' && *p != ' ' && i < action_len - 1) {
+            action[i++] = *p++;
+        }
+        action[i] = '\0';
+    }
+}
+
  // Callback do HTTP: processa a requisição GET e atualiza a ocupação se os parâmetros estiverem presentes
  static err_t http_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
      if (p == NULL) {
@@ -298,7 +324,7 @@
      printf("Servidor HTTP rodando na porta %d...\n", HTTP_PORT);
  }
   
- /* ─── FUNÇÃO PRINCIPAL ───────────────────────────────────────────────────── */
+ /* ─── FUNÇÃO PRINCIPAL ───────────────────────────────────────────── */
  int main() {
      stdio_init_all();
      sleep_ms(10000);  // Aguarda 10s para estabilidade
@@ -334,19 +360,14 @@
      gpio_init(BUTTON_A); gpio_set_dir(BUTTON_A, GPIO_IN); gpio_pull_up(BUTTON_A);
      gpio_init(BUTTON_B); gpio_set_dir(BUTTON_B, GPIO_IN); gpio_pull_up(BUTTON_B);
   
-     /* Inicializa o I2C para o display OLED */
-     i2c_init(I2C_PORT, SSD1306_I2C_CLK * 1000);
-     gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
-     gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
-     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
-     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
+     /* Inicializa o I2C para o display OLED (usando I2C1, SDA=14, SCL=15) */
+     setup_display();
   
-     /* Inicializa o display OLED (128x64) */
-     if (!ssd1306_init_bm(&oled_instance, SSD1306_WIDTH, SSD1306_HEIGHT, false, SSD1306_I2C_ADDR, I2C_PORT)) {
-         printf("Erro ao inicializar o OLED\n");
-         return 1;
-     }
-     ssd1306_config(&oled_instance);
+     /* Teste inicial: exibe "testing" por 5 segundos */
+     mostrar_mensagem("testing", 0, 0, true);
+     sleep_ms(5000);
+  
+     // Após o teste, exibe o status inicial (ocupação 0)
      update_oled_display();
   
      /* Inicia o servidor HTTP */
