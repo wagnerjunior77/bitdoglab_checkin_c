@@ -7,11 +7,13 @@
  *    ("add", "remove", "clear", "set" e "clear_all") para atualizar a ocupação.
  *    Quando a ação for "set", o usuário pode informar (via caixa de texto) quantas pessoas colocar.
  *    Quando a ação for "clear_all", todos os andares serão zerados.
- *  - O display OLED mostra o status do andar selecionado (ex.: "Terreo: X pessoas" ou "Andar N: X pessoas").
+ *  - O display OLED mostra o status do andar selecionado (ex.: "Terreo: X pessoas" 
+ *    ou "Andar N: X pessoas").
  *  - Botões físicos (GPIO 5 e 6) permitem alterar a seleção de andar.
- *  - LEDs RGB individuais (GPIO 13, 11, 12) indicam se o andar está vazio (vermelho) ou ocupado (verde).
+ *  - LEDs RGB individuais (GPIO 13, 11, 12) indicam se o andar está vazio (vermelho)
+ *    ou ocupado (verde).
  *  - A matriz de LED WS2812 (25 LEDs, 5x5) mostra, para cada andar, a proporção da ocupação
- *    (usando 20 pessoas como referência – cada LED equivale a 4 pessoas).
+ *    (usando 50 pessoas como referência – cada LED equivale a 10 pessoas).
  *  - O Wi‑Fi é inicializado em modo Access Point com servidores DHCP/DNS e um servidor HTTP
  *    responde às requisições.
  */
@@ -27,7 +29,7 @@
  #include "dhcpserver/dhcpserver.h"
  #include "dnsserver/dnsserver.h"
  
- // Drivers do display OLED – usando a API baseada em ssd1306_t (BitDogLab)
+ // Drivers do display OLED – API baseada em ssd1306_t (BitDogLab)
  #include "ssd1306.h"       // Declarações, comandos e protótipos para o SSD1306
  #include "ssd1306_i2c.h"   // Implementação via I2C
  #include "ssd1306_font.h"  // Fonte utilizada pelo display
@@ -78,7 +80,7 @@
  // Configurações de ocupação
  #define NUM_FLOORS     5
  #define MAX_OCCUPANCY  50  // controle via botões/HTTP
- // Para a matriz: 20 pessoas = 5 LEDs (cada LED equivale a 4 pessoas)
+ // Para a matriz: 50 pessoas = linha completa de 5 LEDs (cada LED equivale a 10 pessoas)
  
  /* ─── VARIÁVEIS GLOBAIS ───────────────────────────────────────────── */
  static int occupancy[NUM_FLOORS] = {0, 0, 0, 0, 0};
@@ -106,11 +108,10 @@
          dest[i] = '\0';
      }
  }
-
+ 
  /* Protótipos */
-static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, char *action, size_t action_len);
-void update_led_matrix(void);
-
+ static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, char *action, size_t action_len, char *value_str, size_t value_len);
+ void update_led_matrix(void);
  
  /* ─── FUNÇÕES AUXILIARES ───────────────────────────────────────────── */
  // Configura o display OLED e os pinos I2C
@@ -186,9 +187,8 @@ void update_led_matrix(void);
      }
  }
  
- // Atualiza a ocupação; novas ações "set" e "clear_all" foram adicionadas.
- // Se a ação for "set", usa o valor fornecido (via parâmetro "value") para definir a ocupação do andar.
- // Se a ação for "clear_all", zera todos os andares.
+ // Atualiza a ocupação; suporta ações "add", "remove", "clear", "set" e "clear_all"
+ // Quando a ação for "set", usa o valor passado em value_str.
  void update_occupancy(const char *floor_str, const char *action, const char *value_str) {
      if (strcmp(action, "clear_all") == 0) {
           for (int i = 0; i < NUM_FLOORS; i++) {
@@ -216,8 +216,16 @@ void update_led_matrix(void);
      update_led_matrix();
  }
  
- /* ─── Gera a página HTML ───────────────────────────────────────────── */
- // Agora a página inclui campos para "set" e "clear_all" e uma caixa de texto para informar um valor.
+ /* Função para extrair parâmetros da query string.
+    Extrai os parâmetros "floor", "action" e "value". */
+ static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len,
+                                  char *action, size_t action_len, char *value_str, size_t value_len) {
+     parse_param(request_line, "floor=", floor_str, floor_len);
+     parse_param(request_line, "action=", action, action_len);
+     parse_param(request_line, "value=", value_str, value_len);
+ }
+ 
+ /* ─── GERA A PÁGINA HTML ───────────────────────────────────────────── */
  void create_html_page(char *buffer, size_t buffer_size) {
      char body[2048] = "";
      strcat(body, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Monitor de Ocupacao</title>");
@@ -233,14 +241,12 @@ void update_led_matrix(void);
      for (int i = 0; i < NUM_FLOORS; i++) {
           char option[64];
           if(i == 0)
-              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Terreo</option>", i, (i==selected_floor) ? "selected" : "");
+               snprintf(option, sizeof(option), "<option value=\"%d\" %s>Terreo</option>", i, (i==selected_floor) ? "selected" : "");
           else
-              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Andar %d</option>", i, (i==selected_floor) ? "selected" : "", i);
+               snprintf(option, sizeof(option), "<option value=\"%d\" %s>Andar %d</option>", i, (i==selected_floor) ? "selected" : "", i);
           strcat(body, option);
      }
      strcat(body, "</select><br/><br/>");
-     
-     // Botões para add, remove, clear, set e clear all
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"add\"> ");
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"remove\"> ");
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"clear\"> ");
@@ -256,9 +262,9 @@ void update_led_matrix(void);
      for (int i = 0; i < NUM_FLOORS; i++) {
           char row[128];
           if (i == 0)
-              snprintf(row, sizeof(row), "<tr><td>Terreo</td><td>%d pessoas</td></tr>", occupancy[i]);
+               snprintf(row, sizeof(row), "<tr><td>Terreo</td><td>%d pessoas</td></tr>", occupancy[i]);
           else
-              snprintf(row, sizeof(row), "<tr><td>Andar %d</td><td>%d pessoas</td></tr>", i, occupancy[i]);
+               snprintf(row, sizeof(row), "<tr><td>Andar %d</td><td>%d pessoas</td></tr>", i, occupancy[i]);
           strcat(body, row);
      }
      strcat(body, "</table>");
@@ -284,7 +290,7 @@ void update_led_matrix(void);
      }
      return ERR_OK;
  }
- 
+  
  // Callback HTTP: processa a requisição GET e atualiza a ocupação se os parâmetros estiverem presentes
  static err_t http_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
      if (p == NULL) {
@@ -296,7 +302,7 @@ void update_led_matrix(void);
      memcpy(request, p->payload, copy_len);
      request[copy_len] = '\0';
      tcp_recved(tpcb, p->tot_len);
- 
+  
      char line[256] = {0};
      char *token = strtok(request, "\r\n");
      if (token) {
@@ -309,20 +315,18 @@ void update_led_matrix(void);
           pbuf_free(p);
           return ERR_OK;
      }
-   
+    
      char floor_str[8] = "";
      char action[16] = "";
      char value_str[8] = "";
-     parse_param(line, "floor=", floor_str, sizeof(floor_str));
-     parse_param(line, "action=", action, sizeof(action));
-     parse_param(line, "value=", value_str, sizeof(value_str));
+     parse_query_params(line, floor_str, sizeof(floor_str), action, sizeof(action), value_str, sizeof(value_str));
      if (floor_str[0] != '\0' && strcmp(action, "clear_all") != 0) {
           selected_floor = atoi(floor_str);
      }
      if (action[0] != '\0') {
           update_occupancy(floor_str, action, value_str);
      }
-   
+    
      char response[2048] = {0};
      create_html_page(response, sizeof(response));
      err_t write_err = tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
@@ -336,12 +340,12 @@ void update_led_matrix(void);
      pbuf_free(p);
      return ERR_OK;
  }
-   
+  
  static err_t connection_callback(void *arg, struct tcp_pcb *newpcb, err_t err) {
      tcp_recv(newpcb, http_callback);
      return ERR_OK;
  }
-   
+  
  static void start_http_server(void) {
      struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
      if (!pcb) {
@@ -356,7 +360,7 @@ void update_led_matrix(void);
      tcp_accept(pcb, connection_callback);
      printf("Servidor HTTP rodando na porta %d...\n", HTTP_PORT);
  }
- 
+  
  /* ─── FUNÇÕES PARA A MATRIZ DE LED WS2812 ───────────────────────────── */
  // Envia a cor para um LED WS2812 (dados no formato GRB, deslocados 8 bits à esquerda)
  static inline void put_pixel(PIO pio, uint sm, uint32_t pixel_grb) {
@@ -367,12 +371,12 @@ void update_led_matrix(void);
      return ((uint32_t)r << 8) | ((uint32_t)g << 16) | (uint32_t)b;
  }
  // Atualiza a matriz de LED WS2812 (5x5)
- // Para cada andar (0 a NUM_FLOORS-1), considera que 20 pessoas correspondem à linha completa (5 LEDs, ou seja, cada LED equivale a 4 pessoas).
+ // Agora: 50 pessoas = linha completa (5 LEDs) → cada LED equivale a 10 pessoas.
  void update_led_matrix(void) {
      uint32_t pixels[25];
      for (int floor = 0; floor < NUM_FLOORS; floor++) {
-          // Cada LED equivale a 4 pessoas (20 pessoas = linha completa de 5 LEDs)
-          uint8_t lit = occupancy[floor] / 4;
+          // Cada LED equivale a 10 pessoas (50 pessoas = linha completa de 5 LEDs)
+          uint8_t lit = occupancy[floor] / 10;
           if (lit > 5) lit = 5;
           for (int col = 0; col < 5; col++) {
                int index;
@@ -394,13 +398,13 @@ void update_led_matrix(void);
      }
      sleep_us(50);
  }
- 
+  
  /* ─── FUNÇÃO PRINCIPAL ───────────────────────────────────────────── */
  int main() {
      stdio_init_all();
      sleep_ms(10000);  // Aguarda 10s para estabilidade
      printf("Iniciando sistema!\n");
- 
+  
      /* Inicializa o Wi‑Fi */
      if (cyw43_arch_init()) {
           printf("Erro ao inicializar o Wi-Fi\n");
@@ -410,7 +414,7 @@ void update_led_matrix(void);
      const char *ap_pass = "12345678";
      cyw43_arch_enable_ap_mode(ap_ssid, ap_pass, CYW43_AUTH_WPA2_AES_PSK);
      printf("Access Point iniciado com sucesso. SSID: %s\n", ap_ssid);
- 
+  
      // Configuração de IP estático para o AP
      ip4_addr_t gw, mask;
      IP4_ADDR(ip_2_ip4(&gw), 192, 168, 4, 1);
@@ -420,17 +424,17 @@ void update_led_matrix(void);
      dns_server_t dns_server;
      dns_server_init(&dns_server, &gw);
      printf("Wi-Fi no modo AP iniciado!\n");
- 
+  
      /* Configura os LEDs RGB individuais */
      gpio_init(LED_R_PIN); gpio_set_dir(LED_R_PIN, GPIO_OUT);
      gpio_init(LED_G_PIN); gpio_set_dir(LED_G_PIN, GPIO_OUT);
      gpio_init(LED_B_PIN); gpio_set_dir(LED_B_PIN, GPIO_OUT);
      update_led_status();
- 
+  
      /* Configura os botões */
      gpio_init(BUTTON_A); gpio_set_dir(BUTTON_A, GPIO_IN); gpio_pull_up(BUTTON_A);
      gpio_init(BUTTON_B); gpio_set_dir(BUTTON_B, GPIO_IN); gpio_pull_up(BUTTON_B);
- 
+  
      /* Inicializa o I2C para o display OLED (usando I2C1, SDA=14, SCL=15) */
      i2c_init(I2C_PORT, SSD1306_I2C_CLK);
      gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
@@ -438,23 +442,23 @@ void update_led_matrix(void);
      gpio_pull_up(I2C_SDA);
      gpio_pull_up(I2C_SCL);
      setup_display();
- 
+  
      /* Teste inicial: exibe um texto de teste por 5 segundos */
-     mostrar_mensagem("Iniciando sistema de monitoração de andares", 0, 0, true);
+     mostrar_mensagem("Iniciando sistema!", 0, 0, true);
      sleep_ms(5000);
      // Após o teste, exibe o status inicial (ocupação 0)
      update_oled_display();
- 
+  
      /* Inicializa a matriz de LED WS2812 via PIO */
      pio_ws = pio0;
      sm_ws = pio_claim_unused_sm(pio_ws, true);
      offset_ws = pio_add_program(pio_ws, &ws2812_program);
      ws2812_program_init(pio_ws, sm_ws, offset_ws, WS2812_PIN, 800000, IS_RGBW);
      update_led_matrix();
- 
+  
      /* Inicia o servidor HTTP */
      start_http_server();
- 
+  
      /* Loop principal: Processa tarefas do Wi-Fi e atualiza a seleção via botões */
      while (true) {
           #if PICO_CYW43_ARCH_POLL
@@ -464,8 +468,8 @@ void update_led_matrix(void);
                sleep_ms(100);
           #endif
                update_floor_selection();
-     }
- 
+          }
+  
      cyw43_arch_deinit();
      return 0;
  }
