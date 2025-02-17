@@ -371,33 +371,49 @@
      return ((uint32_t)r << 8) | ((uint32_t)g << 16) | (uint32_t)b;
  }
  // Atualiza a matriz de LED WS2812 (5x5)
- // Agora: 50 pessoas = linha completa (5 LEDs) → cada LED equivale a 10 pessoas.
- void update_led_matrix(void) {
-     uint32_t pixels[25];
-     for (int floor = 0; floor < NUM_FLOORS; floor++) {
-          // Cada LED equivale a 10 pessoas (50 pessoas = linha completa de 5 LEDs)
-          uint8_t lit = occupancy[floor] / 10;
-          if (lit > 5) lit = 5;
-          for (int col = 0; col < 5; col++) {
-               int index;
-               // Se a linha for par (0, 2, 4), inverte a ordem dos LEDs
-               if (floor % 2 == 0) {
-                    index = floor * 5 + (4 - col);
-               } else {
-                    index = floor * 5 + col;
-               }
-               if (col < lit)
-                    pixels[index] = urgb_u32(5, 0, 0);  // LED aceso (vermelho)
-               else
-                    pixels[index] = urgb_u32(0, 0, 0);   // LED apagado
-          }
-     }
-     // Envia os 25 pixels para a cadeia WS2812
-     for (int i = 0; i < 25; i++) {
-          put_pixel(pio_ws, sm_ws, pixels[i]);
-     }
-     sleep_us(50);
- }
+// Cada LED equivale a 10 pessoas.
+// Se 1 a 9 pessoas: 1 LED (posição 0) aceso em light blue (RGB 173,216,230).
+// Se ≥10 pessoas: número de LEDs acesos = (ocupação / 10) (limitado a 5), todos em vermelho.
+void update_led_matrix(void) {
+    uint32_t pixels[25];
+    for (int floor = 0; floor < NUM_FLOORS; floor++) {
+        uint8_t leds_lit = 0;
+        // Se há ocupação entre 1 e 9, acende apenas 1 LED (light blue).
+        if (occupancy[floor] > 0 && occupancy[floor] < 10) {
+            leds_lit = 1;
+        } else if (occupancy[floor] >= 10) {
+            leds_lit = occupancy[floor] / 10;
+            if (leds_lit > 5) leds_lit = 5;
+        }
+        for (int col = 0; col < 5; col++) {
+            int index;
+            // Para pisos pares, inverte a ordem dos LEDs na linha.
+            if (floor % 2 == 0) {
+                index = floor * 5 + (4 - col);
+            } else {
+                index = floor * 5 + col;
+            }
+            if (occupancy[floor] > 0 && occupancy[floor] < 10) {
+                // Apenas o primeiro LED (na ordem definida) aceso em light blue.
+                if (col == 0)
+                    pixels[index] = urgb_u32(0, 5, 0); // green
+                else
+                    pixels[index] = urgb_u32(0, 0, 0);
+            } else {
+                // Para ocupações ≥10, acende os primeiros 'leds_lit' LEDs em vermelho.
+                if (col < leds_lit)
+                    pixels[index] = urgb_u32(255, 0, 0); // vermelho
+                else
+                    pixels[index] = urgb_u32(0, 0, 0);
+            }
+        }
+    }
+    // Envia os 25 pixels para a cadeia WS2812
+    for (int i = 0; i < 25; i++) {
+         put_pixel(pio_ws, sm_ws, pixels[i]);
+    }
+    sleep_us(50);
+}
   
  /* ─── FUNÇÃO PRINCIPAL ───────────────────────────────────────────── */
  int main() {
