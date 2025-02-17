@@ -141,16 +141,15 @@
  
  // Atualiza os LEDs RGB individuais conforme a ocupação do andar selecionado
  void update_led_status(void) {
-     if (occupancy[selected_floor] > 0) {
-          gpio_put(LED_R_PIN, 0);
-          gpio_put(LED_G_PIN, 1);
-          gpio_put(LED_B_PIN, 0);
-     } else {
-          gpio_put(LED_R_PIN, 1);
-          gpio_put(LED_G_PIN, 0);
-          gpio_put(LED_B_PIN, 0);
-     }
- }
+    if (occupancy[selected_floor] == 0) {
+         gpio_put(LED_R_PIN, 1);  // acende o LED vermelho
+    } else {
+         gpio_put(LED_R_PIN, 0);  // apaga o LED vermelho
+    }
+    // Desliga os outros LEDs (verde e azul)
+    gpio_put(LED_G_PIN, 0);
+    gpio_put(LED_B_PIN, 0);
+}
  
  // Atualiza o display OLED com o status do andar selecionado
  void update_oled_display(void) {
@@ -372,8 +371,7 @@
  }
  // Atualiza a matriz de LED WS2812 (5x5)
 // Cada LED equivale a 10 pessoas.
-// Se 1 a 9 pessoas: 1 LED (posição 0) aceso em light blue (RGB 173,216,230).
-// Se ≥10 pessoas: número de LEDs acesos = (ocupação / 10) (limitado a 5), todos em vermelho.
+
 void update_led_matrix(void) {
     uint32_t pixels[25];
     for (int floor = 0; floor < NUM_FLOORS; floor++) {
@@ -394,7 +392,7 @@ void update_led_matrix(void) {
                 index = floor * 5 + col;
             }
             if (occupancy[floor] > 0 && occupancy[floor] < 10) {
-                // Apenas o primeiro LED (na ordem definida) aceso em light blue.
+                // Apenas o primeiro LED (na ordem definida) aceso em verde.
                 if (col == 0)
                     pixels[index] = urgb_u32(0, 5, 0); // green
                 else
@@ -402,7 +400,7 @@ void update_led_matrix(void) {
             } else {
                 // Para ocupações ≥10, acende os primeiros 'leds_lit' LEDs em vermelho.
                 if (col < leds_lit)
-                    pixels[index] = urgb_u32(255, 0, 0); // vermelho
+                    pixels[index] = urgb_u32(5, 0, 0); // vermelho
                 else
                     pixels[index] = urgb_u32(0, 0, 0);
             }
