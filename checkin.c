@@ -4,14 +4,14 @@
  *
  * Funcionalidades:
  *  - A interface web (HTTP) permite selecionar um andar (0 a 4) e enviar ações 
- *    ("add", "remove", "clear") para atualizar a ocupação.
- *  - O display OLED mostra o status do andar selecionado (ex.: "Terreo: X pessoas" 
- *    ou "Andar N: X pessoas").
+ *    ("add", "remove", "clear", "set" e "clear_all") para atualizar a ocupação.
+ *    Quando a ação for "set", o usuário pode informar (via caixa de texto) quantas pessoas colocar.
+ *    Quando a ação for "clear_all", todos os andares serão zerados.
+ *  - O display OLED mostra o status do andar selecionado (ex.: "Terreo: X pessoas" ou "Andar N: X pessoas").
  *  - Botões físicos (GPIO 5 e 6) permitem alterar a seleção de andar.
- *  - LEDs RGB individuais (GPIO 13, 11, 12) indicam se o andar está vazio (vermelho)
- *    ou ocupado (verde).
- *  - A matriz de LED WS2812 (25 LEDs, 5x5) mostra, para cada andar, a proporção da 
- *    ocupação (usando 20 pessoas como referência – cada LED equivale a 4 pessoas).
+ *  - LEDs RGB individuais (GPIO 13, 11, 12) indicam se o andar está vazio (vermelho) ou ocupado (verde).
+ *  - A matriz de LED WS2812 (25 LEDs, 5x5) mostra, para cada andar, a proporção da ocupação
+ *    (usando 20 pessoas como referência – cada LED equivale a 4 pessoas).
  *  - O Wi‑Fi é inicializado em modo Access Point com servidores DHCP/DNS e um servidor HTTP
  *    responde às requisições.
  */
@@ -27,8 +27,8 @@
  #include "dhcpserver/dhcpserver.h"
  #include "dnsserver/dnsserver.h"
  
- // Drivers do display OLED – API baseada em ssd1306_t
- #include "ssd1306.h"       // Declarações, comandos e protótipos
+ // Drivers do display OLED – usando a API baseada em ssd1306_t (BitDogLab)
+ #include "ssd1306.h"       // Declarações, comandos e protótipos para o SSD1306
  #include "ssd1306_i2c.h"   // Implementação via I2C
  #include "ssd1306_font.h"  // Fonte utilizada pelo display
  
@@ -77,8 +77,8 @@
  
  // Configurações de ocupação
  #define NUM_FLOORS     5
- #define MAX_OCCUPANCY  50  // Para controle via botões/HTTP
- // Para o mapeamento da matriz, usaremos 20 pessoas = 5 LEDs (cada LED equivale a 4 pessoas)
+ #define MAX_OCCUPANCY  50  // controle via botões/HTTP
+ // Para a matriz: 20 pessoas = 5 LEDs (cada LED equivale a 4 pessoas)
  
  /* ─── VARIÁVEIS GLOBAIS ───────────────────────────────────────────── */
  static int occupancy[NUM_FLOORS] = {0, 0, 0, 0, 0};
@@ -92,9 +92,25 @@
  uint sm_ws;
  uint offset_ws;
  
- /* ─── PROTÓTIPOS DE FUNÇÕES AUXILIARES ───────────────────────────────── */
- static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, char *action, size_t action_len);
- void update_led_matrix(void);
+ /* ─── FUNÇÕES AUXILIARES PARA PARÂMETROS HTTP ──────────────────────────*/
+ // Função genérica para extrair um parâmetro da query string
+ static void parse_param(const char *request_line, const char *key, char *dest, size_t dest_size) {
+     dest[0] = '\0';
+     const char *p = strstr(request_line, key);
+     if (p) {
+         p += strlen(key);
+         size_t i = 0;
+         while (*p && *p != '&' && *p != ' ' && i < dest_size - 1) {
+             dest[i++] = *p++;
+         }
+         dest[i] = '\0';
+     }
+ }
+
+ /* Protótipos */
+static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, char *action, size_t action_len);
+void update_led_matrix(void);
+
  
  /* ─── FUNÇÕES AUXILIARES ───────────────────────────────────────────── */
  // Configura o display OLED e os pinos I2C
@@ -107,7 +123,7 @@
  
      disp.external_vcc = false;
      if (!ssd1306_init(&disp, SSD1306_WIDTH, SSD1306_HEIGHT, SSD1306_I2C_ADDR, I2C_PORT)) {
-         printf("Erro ao inicializar o OLED\n");
+          printf("Erro ao inicializar o OLED\n");
      }
      ssd1306_clear(&disp);
  }
@@ -115,7 +131,7 @@
  // Função para mostrar uma mensagem no OLED
  void mostrar_mensagem(char *str, uint32_t x, uint32_t y, bool should_clear) {
      if (should_clear) {
-         ssd1306_clear(&disp);
+          ssd1306_clear(&disp);
      }
      sleep_ms(50);
      ssd1306_draw_string(&disp, x, y, 1, str);
@@ -125,13 +141,13 @@
  // Atualiza os LEDs RGB individuais conforme a ocupação do andar selecionado
  void update_led_status(void) {
      if (occupancy[selected_floor] > 0) {
-         gpio_put(LED_R_PIN, 0);
-         gpio_put(LED_G_PIN, 1);
-         gpio_put(LED_B_PIN, 0);
+          gpio_put(LED_R_PIN, 0);
+          gpio_put(LED_G_PIN, 1);
+          gpio_put(LED_B_PIN, 0);
      } else {
-         gpio_put(LED_R_PIN, 1);
-         gpio_put(LED_G_PIN, 0);
-         gpio_put(LED_B_PIN, 0);
+          gpio_put(LED_R_PIN, 1);
+          gpio_put(LED_G_PIN, 0);
+          gpio_put(LED_B_PIN, 0);
      }
  }
  
@@ -140,9 +156,9 @@
      char buf[64];
      ssd1306_clear(&disp);
      if (selected_floor == 0)
-         snprintf(buf, sizeof(buf), "Terreo: %d pessoas", occupancy[selected_floor]);
+          snprintf(buf, sizeof(buf), "Terreo: %d pessoas", occupancy[selected_floor]);
      else
-         snprintf(buf, sizeof(buf), "Andar %d: %d pessoas", selected_floor, occupancy[selected_floor]);
+          snprintf(buf, sizeof(buf), "Andar %d: %d pessoas", selected_floor, occupancy[selected_floor]);
      ssd1306_draw_string(&disp, 0, 0, 1, buf);
      ssd1306_show(&disp);
  }
@@ -155,42 +171,53 @@
  // Atualiza a seleção de andar via botões
  void update_floor_selection(void) {
      if (read_button(BUTTON_B)) {
-         selected_floor = (selected_floor + 1) % NUM_FLOORS;
-         update_oled_display();
-         update_led_status();
-         update_led_matrix();
-         sleep_ms(300); // debounce
+          selected_floor = (selected_floor + 1) % NUM_FLOORS;
+          update_oled_display();
+          update_led_status();
+          update_led_matrix();
+          sleep_ms(300); // debounce
      }
      if (read_button(BUTTON_A)) {
-         selected_floor = (selected_floor - 1 + NUM_FLOORS) % NUM_FLOORS;
-         update_oled_display();
-         update_led_status();
-         update_led_matrix();
-         sleep_ms(300); // debounce
+          selected_floor = (selected_floor - 1 + NUM_FLOORS) % NUM_FLOORS;
+          update_oled_display();
+          update_led_status();
+          update_led_matrix();
+          sleep_ms(300); // debounce
      }
  }
  
- // Atualiza a ocupação (chamada via HTTP ou outra interface)
- void update_occupancy(const char *floor_str, const char *action) {
-     int floor = atoi(floor_str);
-     if (floor < 0 || floor >= NUM_FLOORS) return;
-     selected_floor = floor;
-     if (strcmp(action, "add") == 0) {
-         if (occupancy[floor] < MAX_OCCUPANCY)
-             occupancy[floor]++;
-     } else if (strcmp(action, "remove") == 0) {
-         if (occupancy[floor] > 0)
-             occupancy[floor]--;
-     } else if (strcmp(action, "clear") == 0) {
-         occupancy[floor] = 0;
+ // Atualiza a ocupação; novas ações "set" e "clear_all" foram adicionadas.
+ // Se a ação for "set", usa o valor fornecido (via parâmetro "value") para definir a ocupação do andar.
+ // Se a ação for "clear_all", zera todos os andares.
+ void update_occupancy(const char *floor_str, const char *action, const char *value_str) {
+     if (strcmp(action, "clear_all") == 0) {
+          for (int i = 0; i < NUM_FLOORS; i++) {
+               occupancy[i] = 0;
+          }
+     } else {
+          int floor = atoi(floor_str);
+          if (floor < 0 || floor >= NUM_FLOORS) return;
+          selected_floor = floor;
+          if (strcmp(action, "add") == 0) {
+               if (occupancy[floor] < MAX_OCCUPANCY)
+                    occupancy[floor]++;
+          } else if (strcmp(action, "remove") == 0) {
+               if (occupancy[floor] > 0)
+                    occupancy[floor]--;
+          } else if (strcmp(action, "clear") == 0) {
+               occupancy[floor] = 0;
+          } else if (strcmp(action, "set") == 0) {
+               occupancy[floor] = atoi(value_str);
+          }
      }
-     printf("Andar %d: nova ocupacao = %d\n", floor, occupancy[floor]);
+     printf("Andar %d: nova ocupacao = %d\n", selected_floor, occupancy[selected_floor]);
      update_led_status();
      update_oled_display();
      update_led_matrix();
  }
  
- // Gera a página HTML com formulário e tabela com o status de todos os andares
+ /* ─── Gera a página HTML ───────────────────────────────────────────── */
+ // Agora a página inclui campos para "set" e "clear_all" e uma caixa de texto para informar um valor.
  void create_html_page(char *buffer, size_t buffer_size) {
      char body[2048] = "";
      strcat(body, "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Monitor de Ocupacao</title>");
@@ -199,22 +226,27 @@
      strcat(body, "</head><body>");
      strcat(body, "<h1>Monitor de Ocupacao do Predio</h1>");
      
-     // Formulário
+     // Formulário para modificar a ocupação
      strcat(body, "<form action=\"/\" method=\"GET\">");
      strcat(body, "<label for=\"floor\">Selecione o Andar:</label>");
      strcat(body, "<select name=\"floor\" id=\"floor\">");
      for (int i = 0; i < NUM_FLOORS; i++) {
-         char option[64];
-         if(i == 0)
-             snprintf(option, sizeof(option), "<option value=\"%d\" %s>Terreo</option>", i, (i==selected_floor) ? "selected" : "");
-         else
-             snprintf(option, sizeof(option), "<option value=\"%d\" %s>Andar %d</option>", i, (i==selected_floor) ? "selected" : "", i);
-         strcat(body, option);
+          char option[64];
+          if(i == 0)
+              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Terreo</option>", i, (i==selected_floor) ? "selected" : "");
+          else
+              snprintf(option, sizeof(option), "<option value=\"%d\" %s>Andar %d</option>", i, (i==selected_floor) ? "selected" : "", i);
+          strcat(body, option);
      }
      strcat(body, "</select><br/><br/>");
+     
+     // Botões para add, remove, clear, set e clear all
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"add\"> ");
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"remove\"> ");
      strcat(body, "<input type=\"submit\" name=\"action\" value=\"clear\"> ");
+     strcat(body, "<input type=\"submit\" name=\"action\" value=\"clear_all\"> <br/><br/>");
+     strcat(body, "Ou defina a ocupacao: <input type=\"text\" name=\"value\" placeholder=\"Numero\"> ");
+     strcat(body, "<input type=\"submit\" name=\"action\" value=\"set\">");
      strcat(body, "</form>");
      
      // Tabela com o status de todos os andares
@@ -222,12 +254,12 @@
      strcat(body, "<table>");
      strcat(body, "<tr><th>Andar</th><th>Ocupacao</th></tr>");
      for (int i = 0; i < NUM_FLOORS; i++) {
-         char row[128];
-         if (i == 0)
-             snprintf(row, sizeof(row), "<tr><td>Terreo</td><td>%d pessoas</td></tr>", occupancy[i]);
-         else
-             snprintf(row, sizeof(row), "<tr><td>Andar %d</td><td>%d pessoas</td></tr>", i, occupancy[i]);
-         strcat(body, row);
+          char row[128];
+          if (i == 0)
+              snprintf(row, sizeof(row), "<tr><td>Terreo</td><td>%d pessoas</td></tr>", occupancy[i]);
+          else
+              snprintf(row, sizeof(row), "<tr><td>Andar %d</td><td>%d pessoas</td></tr>", i, occupancy[i]);
+          strcat(body, row);
      }
      strcat(body, "</table>");
      
@@ -247,12 +279,12 @@
      tcp_sent(tpcb, NULL);
      err_t err = tcp_close(tpcb);
      if (err != ERR_OK) {
-         printf("Erro ao fechar conexao (err=%d), abortando.\n", err);
-         tcp_abort(tpcb);
+          printf("Erro ao fechar conexao (err=%d), abortando.\n", err);
+          tcp_abort(tpcb);
      }
      return ERR_OK;
  }
-  
+ 
  // Callback HTTP: processa a requisição GET e atualiza a ocupação se os parâmetros estiverem presentes
  static err_t http_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
      if (p == NULL) {
@@ -264,138 +296,115 @@
      memcpy(request, p->payload, copy_len);
      request[copy_len] = '\0';
      tcp_recved(tpcb, p->tot_len);
-  
+ 
      char line[256] = {0};
      char *token = strtok(request, "\r\n");
      if (token) {
-         strncpy(line, token, sizeof(line)-1);
+          strncpy(line, token, sizeof(line)-1);
      } else {
-         pbuf_free(p);
-         return ERR_OK;
+          pbuf_free(p);
+          return ERR_OK;
      }
      if (strncmp(line, "GET", 3) != 0) {
-         pbuf_free(p);
-         return ERR_OK;
+          pbuf_free(p);
+          return ERR_OK;
      }
-  
+   
      char floor_str[8] = "";
      char action[16] = "";
-     parse_query_params(line, floor_str, sizeof(floor_str), action, sizeof(action));
-     if (floor_str[0] != '\0') {
-         selected_floor = atoi(floor_str);
+     char value_str[8] = "";
+     parse_param(line, "floor=", floor_str, sizeof(floor_str));
+     parse_param(line, "action=", action, sizeof(action));
+     parse_param(line, "value=", value_str, sizeof(value_str));
+     if (floor_str[0] != '\0' && strcmp(action, "clear_all") != 0) {
+          selected_floor = atoi(floor_str);
      }
      if (action[0] != '\0') {
-         update_occupancy(floor_str, action);
+          update_occupancy(floor_str, action, value_str);
      }
-  
+   
      char response[2048] = {0};
      create_html_page(response, sizeof(response));
      err_t write_err = tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
      if (write_err == ERR_OK) {
-         tcp_sent(tpcb, sent_callback);
-         tcp_output(tpcb);
+          tcp_sent(tpcb, sent_callback);
+          tcp_output(tpcb);
      } else {
-         printf("Erro ao escrever a resposta (err=%d), fechando conexao.\n", write_err);
-         tcp_close(tpcb);
+          printf("Erro ao escrever a resposta (err=%d), fechando conexao.\n", write_err);
+          tcp_close(tpcb);
      }
      pbuf_free(p);
      return ERR_OK;
  }
-  
+   
  static err_t connection_callback(void *arg, struct tcp_pcb *newpcb, err_t err) {
      tcp_recv(newpcb, http_callback);
      return ERR_OK;
  }
-  
+   
  static void start_http_server(void) {
      struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
      if (!pcb) {
-         printf("Erro ao criar PCB\n");
-         return;
+          printf("Erro ao criar PCB\n");
+          return;
      }
      if (tcp_bind(pcb, IP_ANY_TYPE, HTTP_PORT) != ERR_OK) {
-         printf("Erro ao ligar o servidor na porta %d\n", HTTP_PORT);
-         return;
+          printf("Erro ao ligar o servidor na porta %d\n", HTTP_PORT);
+          return;
      }
      pcb = tcp_listen(pcb);
      tcp_accept(pcb, connection_callback);
      printf("Servidor HTTP rodando na porta %d...\n", HTTP_PORT);
  }
  
- /* ─── FUNÇÕES AUXILIARES PARA A MATRIZ DE LED WS2812 ────────────────────── */
+ /* ─── FUNÇÕES PARA A MATRIZ DE LED WS2812 ───────────────────────────── */
  // Envia a cor para um LED WS2812 (dados no formato GRB, deslocados 8 bits à esquerda)
  static inline void put_pixel(PIO pio, uint sm, uint32_t pixel_grb) {
      pio_sm_put_blocking(pio, sm, pixel_grb << 8u);
  }
  // Converte componentes R, G, B para um único valor de 24 bits (formato GRB)
  static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
-     return ((uint32_t) r << 8) | ((uint32_t) g << 16) | (uint32_t) b;
+     return ((uint32_t)r << 8) | ((uint32_t)g << 16) | (uint32_t)b;
  }
- 
  // Atualiza a matriz de LED WS2812 (5x5)
  // Para cada andar (0 a NUM_FLOORS-1), considera que 20 pessoas correspondem à linha completa (5 LEDs, ou seja, cada LED equivale a 4 pessoas).
  void update_led_matrix(void) {
-    uint32_t pixels[25];
-    for (int floor = 0; floor < NUM_FLOORS; floor++) {
-        // Cada LED equivale a 4 pessoas (20 pessoas = linha completa de 5 LEDs)
-        uint8_t lit = occupancy[floor] / 4;
-        if (lit > 5) lit = 5;
-        for (int col = 0; col < 5; col++) {
-            int index;
-            // Se a linha for par (0, 2, 4), inverte a ordem dos LEDs
-            if (floor % 2 == 0) {
-                index = floor * 5 + (4 - col);
-            } else {
-                index = floor * 5 + col;
-            }
-            if (col < lit)
-                pixels[index] = urgb_u32(5, 0, 0);  // LED aceso em vermelho
-            else
-                pixels[index] = urgb_u32(0, 0, 0);   // LED apagado
-        }
-    }
-    // Envia os 25 pixels para a cadeia WS2812
-    for (int i = 0; i < 25; i++) {
-         put_pixel(pio_ws, sm_ws, pixels[i]);
-    }
-    sleep_us(50);
-}
-
- 
- /* ─── Função auxiliar para extrair parâmetros da query string ───── */
- static void parse_query_params(const char *request_line, char *floor_str, size_t floor_len, char *action, size_t action_len) {
-     floor_str[0] = '\0';
-     action[0] = '\0';
-     const char *p = strstr(request_line, "floor=");
-     if (p) {
-         p += strlen("floor=");
-         size_t i = 0;
-         while (*p && *p != '&' && *p != ' ' && i < floor_len - 1) {
-             floor_str[i++] = *p++;
-         }
-         floor_str[i] = '\0';
+     uint32_t pixels[25];
+     for (int floor = 0; floor < NUM_FLOORS; floor++) {
+          // Cada LED equivale a 4 pessoas (20 pessoas = linha completa de 5 LEDs)
+          uint8_t lit = occupancy[floor] / 4;
+          if (lit > 5) lit = 5;
+          for (int col = 0; col < 5; col++) {
+               int index;
+               // Se a linha for par (0, 2, 4), inverte a ordem dos LEDs
+               if (floor % 2 == 0) {
+                    index = floor * 5 + (4 - col);
+               } else {
+                    index = floor * 5 + col;
+               }
+               if (col < lit)
+                    pixels[index] = urgb_u32(5, 0, 0);  // LED aceso (vermelho)
+               else
+                    pixels[index] = urgb_u32(0, 0, 0);   // LED apagado
+          }
      }
-     p = strstr(request_line, "action=");
-     if (p) {
-         p += strlen("action=");
-         size_t i = 0;
-         while (*p && *p != '&' && *p != ' ' && i < action_len - 1) {
-             action[i++] = *p++;
-         }
-         action[i] = '\0';
+     // Envia os 25 pixels para a cadeia WS2812
+     for (int i = 0; i < 25; i++) {
+          put_pixel(pio_ws, sm_ws, pixels[i]);
      }
+     sleep_us(50);
  }
  
  /* ─── FUNÇÃO PRINCIPAL ───────────────────────────────────────────── */
  int main() {
      stdio_init_all();
      sleep_ms(10000);  // Aguarda 10s para estabilidade
-     printf("Iniciando sistema de monitoramento\n");
+     printf("Iniciando sistema!\n");
  
      /* Inicializa o Wi‑Fi */
      if (cyw43_arch_init()) {
-         printf("Erro ao inicializar o Wi-Fi\n");
-         return 1;
+          printf("Erro ao inicializar o Wi-Fi\n");
+          return 1;
      }
      const char *ap_ssid = "BitDog";
      const char *ap_pass = "12345678";
@@ -431,9 +440,8 @@
      setup_display();
  
      /* Teste inicial: exibe um texto de teste por 5 segundos */
-     mostrar_mensagem("Iniciando sistema de monitoração de andares!", 0, 0, true);
+     mostrar_mensagem("Iniciando sistema de monitoração de andares", 0, 0, true);
      sleep_ms(5000);
- 
      // Após o teste, exibe o status inicial (ocupação 0)
      update_oled_display();
  
@@ -449,13 +457,13 @@
  
      /* Loop principal: Processa tarefas do Wi-Fi e atualiza a seleção via botões */
      while (true) {
-     #if PICO_CYW43_ARCH_POLL
-          cyw43_arch_poll();
-          cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
-     #else
-          sleep_ms(100);
-     #endif
-          update_floor_selection();
+          #if PICO_CYW43_ARCH_POLL
+               cyw43_arch_poll();
+               cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
+          #else
+               sleep_ms(100);
+          #endif
+               update_floor_selection();
      }
  
      cyw43_arch_deinit();
