@@ -41,6 +41,12 @@ add_executable(checkin
     # ... se tiver mais fontes ...
 )
 
+# Criação explícita do diretório 'generated' para armazenar os arquivos gerados
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/generated)
+
+# Gera o cabeçalho a partir do arquivo ws2812.pio e coloca em /generated
+pico_generate_pio_header(checkin ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/generated)
+
 pico_set_program_name(checkin "checkin")
 pico_set_program_version(checkin "0.1")
 
@@ -52,6 +58,7 @@ target_link_libraries(checkin
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     hardware_i2c
+    hardware_pio
 )
 
 # (5) Incluir diretórios
