@@ -52,6 +52,9 @@ Ambiente de desenvolvimento: VS Code, PlatformIO
 
 Após isso você terá o arquivo .uf2 só para jogar na BitDogLab após conectar ela via USB e rodar o sistema.
 
+![image](https://github.com/user-attachments/assets/2b53a947-35bd-43dd-85f3-c5243a747887)
+
+
 📝 *Utilização*
 
 - Inicialização
