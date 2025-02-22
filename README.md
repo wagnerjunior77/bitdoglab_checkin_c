@@ -85,7 +85,7 @@ Após isso você terá o arquivo .uf2 só para jogar na BitDogLab após conectar
 
 Matriz de LED e Display OLED
 
-![image](https://github.com/user-attachments/assets/e89c9c73-2755-4af4-a1b8-d67dd8eaf36d)
+![image](https://github.com/user-attachments/assets/6c9d7d54-723c-417d-9743-3ade9e04ca82)
 
 
 🚧 Melhorias Futuras
