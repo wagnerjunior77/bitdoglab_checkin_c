@@ -81,6 +81,13 @@ Após isso você terá o arquivo .uf2 só para jogar na BitDogLab após conectar
 
 - LEDs RGB: Indicadores rápidos (vermelho = andar vazio).
 
+📷 Imagens
+
+Matriz de LED e Display OLED
+
+![image](https://github.com/user-attachments/assets/e89c9c73-2755-4af4-a1b8-d67dd8eaf36d)
+
+
 🚧 Melhorias Futuras
 
 Modularização maior do código.
